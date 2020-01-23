@@ -35,7 +35,6 @@ __version__ = "1.6"
 import boto3
 import datetime
 import logging
-import json
 import os
 import time
 import pprint
@@ -44,7 +43,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Tuple, Union
 from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
 
-from .helpers import chunks, to_bool
+from .helpers import chunks
 
 
 logger = logging.getLogger('sosw-dynamodb')
@@ -230,8 +229,8 @@ class DynamoDbClient:
         return indexes
 
 
-    def dynamo_to_dict(self, dynamo_row: Dict, fetch_all_fields: Optional[bool] = None) -> Dict:
-        return dynamo_to_dict(dynamo_row, row_mapper=self.row_mapper, fetch_all_fields=fetch_all_fields,
+    def dynamo_to_dict(self, dynamo_row: Dict, only_fields: Optional[List[str]] = None) -> Dict:
+        return dynamo_to_dict(dynamo_row, row_mapper=self.row_mapper, only_fields=only_fields,
                               dont_json_loads_results=self.config.get('dont_json_loads_results'))
 
 
@@ -242,7 +241,7 @@ class DynamoDbClient:
     def get_by_query(self, keys: Dict, table_name: Optional[str] = None, index_name: Optional[str] = None,
                      comparisons: Optional[Dict] = None, max_items: Optional[int] = None,
                      filter_expression: Optional[str] = None, return_count: bool = False,
-                     desc: bool = False, fetch_all_fields: bool = None, expr_attrs_names: list = None) \
+                     desc: bool = False, only_fields: Optional[List[str]] = None, expr_attrs_names: list = None) \
             -> Union[List[Dict], int]:
         """
         Get an item from a table, by some keys. Can specify an index.
@@ -272,8 +271,7 @@ class DynamoDbClient:
         :param bool return_count: If True, will return the number of items in the result instead of the items themselves
         :param bool desc:    By default (False) the the values will be sorted ascending by the SortKey.
                              To reverse the order set the argument `desc = True`.
-        :param bool fetch_all_fields: If False, will only get the attributes specified in the row mapper.
-                                      If True, will get all attributes. Default is False.
+        :param list only_fields: If provided, will only return the given attributes
         :param list expr_attrs_names: List of attributes names, in case if an attribute name begins with a number or
             contains a space, a special character, or a reserved word, you must use an expression attribute name to
             replace that attribute's name in the expression.
@@ -361,7 +359,7 @@ class DynamoDbClient:
             return sum([page['Count'] for page in response_iterator])
 
         for page in response_iterator:
-            result += [self.dynamo_to_dict(x, fetch_all_fields=fetch_all_fields) for x in page['Items']]
+            result += [self.dynamo_to_dict(x, only_fields=only_fields) for x in page['Items']]
             self.stats['dynamo_get_queries'] += 1
             if max_items and len(result) >= max_items:
                 break
@@ -414,7 +412,7 @@ class DynamoDbClient:
         return result_expr, result_values
 
 
-    def get_by_scan(self, attrs=None, table_name=None, fetch_all_fields=None):
+    def get_by_scan(self, attrs=None, table_name=None, only_fields=None):
         """
         Scans a table. Don't use this method if you want to select by keys. It is SLOW compared to get_by_query.
         Careful - don't make queries of too many items, this could run for a long time.
@@ -423,8 +421,7 @@ class DynamoDbClient:
 
         :param dict attrs: Attribute names and values of the items we get. Can be empty to get the whole table.
         :param str table_name: Name of the dynamo table. If not specified, will use table_name from the config.
-        :param bool fetch_all_fields: If False, will only get the attributes specified in the row mapper.
-            If True, will get all attributes. Default is False.
+        :param list only_fields: If provided, will only return the given attributes.
         :return: List of items from the table, each item in key-value format
         :rtype: list
         """
@@ -433,13 +430,13 @@ class DynamoDbClient:
 
         result = []
         for page in response_iterator:
-            result += [self.dynamo_to_dict(x, fetch_all_fields=fetch_all_fields) for x in page['Items']]
+            result += [self.dynamo_to_dict(x, only_fields=only_fields) for x in page['Items']]
             self.stats['dynamo_scan_queries'] += 1
 
         return result
 
 
-    def get_by_scan_generator(self, attrs=None, table_name=None, fetch_all_fields=None):
+    def get_by_scan_generator(self, attrs=None, table_name=None, only_fields=None):
         """
         Scans a table. Don't use this method if you want to select by keys. It is SLOW compared to get_by_query.
         Careful - don't make queries of too many items, this could run for a long time.
@@ -449,7 +446,7 @@ class DynamoDbClient:
 
         :param dict attrs: Attribute names and values of the items we get. Can be empty to get the whole table.
         :param str table_name: Name of the dynamo table. If not specified, will use table_name from the config.
-        :param bool fetch_all_fields: If False, will only get the attributes specified in the row mapper.
+        :param list only_fields: If provided, will only return the given attributes
             If false, will get all attributes. Default is True.
         :return: List of items from the table, each item in key-value format
         :rtype: list
@@ -458,7 +455,7 @@ class DynamoDbClient:
         response_iterator = self._build_scan_iterator(attrs, table_name)
         for page in response_iterator:
             self.stats['dynamo_scan_queries'] += 1
-            yield [self.dynamo_to_dict(x, fetch_all_fields=fetch_all_fields) for x in page['Items']]
+            yield [self.dynamo_to_dict(x, only_fields=only_fields) for x in page['Items']]
 
 
     def _build_scan_iterator(self, attrs=None, table_name=None):
@@ -493,7 +490,7 @@ class DynamoDbClient:
 
 
     def batch_get_items_one_table(self, keys_list, table_name=None, max_retries=0, retry_wait_base_time=0.2,
-                                  fetch_all_fields=None):
+                                  only_fields=None):
         """
         Gets a batch of items from a single dynamo table.
         Only accepts keys, can't query by other columns.
@@ -511,8 +508,7 @@ class DynamoDbClient:
                                 multiplied by 2 after each retry, so `retries` shouldn't be a big number.
                                 Default is 1.
         :param int retry_wait_base_time: Wait this much time after first retry. Will wait twice longer in each retry.
-        :param bool fetch_all_fields: If False, will only get the attributes specified in the row mapper.
-                                      If True, will get all attributes. Default is False.
+        :param list only_fields: If provided, will only return the given attributes
         :return: List of items from the table
         :rtype: list
         """
@@ -567,7 +563,7 @@ class DynamoDbClient:
 
         result = []
         for item in all_items:
-            result.append(self.dynamo_to_dict(item, fetch_all_fields=fetch_all_fields))
+            result.append(self.dynamo_to_dict(item, only_fields=only_fields))
 
         return result
 
