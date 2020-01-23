@@ -28,6 +28,7 @@ def dynamo_to_dict(dynamo_row: Dict, row_mapper: Dict[str, str], fetch_all_field
     :param dict row_mapper:       Attributes and their types. E.g. {'key1': 'N', 'key2': 'S'}
     :param bool fetch_all_fields: If False only row_mapper fields will be extracted from dynamo_row, else, all
                                   fields will be extracted from dynamo_row.
+    :param dont_json_loads_results: Set it to False if you don't want to json.loads string-jsons.
     :return: The row in a key-value format
     :rtype: dict
     """

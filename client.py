@@ -25,6 +25,7 @@
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
 """
+from converters import dynamo_to_dict, dict_to_dynamo
 
 
 __all__ = ['DynamoDbClient', 'clean_dynamo_table']
@@ -227,6 +228,15 @@ class DynamoDbClient:
             }
 
         return indexes
+
+
+    def dynamo_to_dict(self, dynamo_row: Dict, fetch_all_fields: Optional[bool] = None) -> Dict:
+        return dynamo_to_dict(dynamo_row, row_mapper=self.row_mapper, fetch_all_fields=fetch_all_fields,
+                              dont_json_loads_results=self.config.get('dont_json_loads_results'))
+
+
+    def dict_to_dynamo(self, row_dict, add_prefix=None):
+        return dict_to_dynamo(row_dict, row_mapper=self.row_mapper, add_prefix=add_prefix)
 
 
     def get_by_query(self, keys: Dict, table_name: Optional[str] = None, index_name: Optional[str] = None,
