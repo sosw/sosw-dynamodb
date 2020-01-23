@@ -29,7 +29,7 @@ from converters import dynamo_to_dict, dict_to_dynamo
 
 
 __all__ = ['DynamoDbClient', 'clean_dynamo_table']
-__author__ = "Nikolay Grishchenko, Sophie Fogel, Gil Halperin"
+__author__ = "Nikolay Grishchenko, Sophie Fogel, Gil Halperin, Mark Bulgakov"
 __version__ = "1.6"
 
 import boto3
