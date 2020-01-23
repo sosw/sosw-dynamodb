@@ -1,0 +1,2 @@
+class TableNotRegisteredException(ValueError):
+    pass
