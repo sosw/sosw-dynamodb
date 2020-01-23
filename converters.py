@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
 
 from helpers import to_bool
@@ -14,7 +14,7 @@ type_serializer = TypeSerializer()
 type_deserializer = TypeDeserializer()
 
 
-def dynamo_to_dict(dynamo_row: Dict, row_mapper: Dict[str, str], fetch_all_fields: Optional[bool] = None,
+def dynamo_to_dict(dynamo_row: Dict, row_mapper: Dict[str, str], only_fields: Optional[List[str]] = None,
                    dont_json_loads_results: bool = None) -> Dict:
     """
     Convert the ugly DynamoDB syntax of the row, to regular dictionary.
@@ -26,8 +26,7 @@ def dynamo_to_dict(dynamo_row: Dict, row_mapper: Dict[str, str], fetch_all_field
 
     :param dict dynamo_row:       DynamoDB row item
     :param dict row_mapper:       Attributes and their types. E.g. {'key1': 'N', 'key2': 'S'}
-    :param bool fetch_all_fields: If False only row_mapper fields will be extracted from dynamo_row, else, all
-                                  fields will be extracted from dynamo_row.
+    :param list only_fields:      If provided, will only return the given attributes.
     :param dont_json_loads_results: Set it to False if you don't want to json.loads string-jsons.
     :return: The row in a key-value format
     :rtype: dict
@@ -35,44 +34,21 @@ def dynamo_to_dict(dynamo_row: Dict, row_mapper: Dict[str, str], fetch_all_field
 
     result = {}
 
-    # Get fields from dynamo_row which are present in row mapper
-    if not fetch_all_fields:
-        for key, key_type in row_mapper.items():
-            val_dict = dynamo_row.get(key)  # Ex: {'N': "1234"} or {'S': "myvalue"}
-            if val_dict:
-                val = val_dict.get(key_type)  # Ex: 1234 or "myvalue"
+    for key, val_dict in dynamo_row.items():
+
+        if not only_fields or key in only_fields:
+
+            for val_type, val in val_dict.items():
+
+                key_type = row_mapper.get(key) or val_type
 
                 # type_deserializer.deserialize() parses 'N' to `Decimal` type but it cant be parsed to a datetime
                 # so we cast it to either an integer or a float.
                 if key_type == 'N':
                     result[key] = float(val) if '.' in val else int(val)
                 elif key_type == 'M':
-                    result[key] = dynamo_to_dict(val, row_mapper=row_mapper, fetch_all_fields=True)
+                    result[key] = dynamo_to_dict(val, row_mapper=row_mapper)
                 elif key_type == 'S':
-                    # Try to load to a dictionary if looks like JSON.
-                    if val.startswith('{') and val.endswith('}') and not dont_json_loads_results:
-                        try:
-                            result[key] = json.loads(val)
-                        except ValueError:
-                            logger.warning(f"A JSON-looking string failed to parse: {val}")
-                            result[key] = val
-                    else:
-                        result[key] = val
-                else:
-                    result[key] = type_deserializer.deserialize(val_dict)
-
-    # Get all fields from dynamo_row
-    else:
-        for key, val_dict in dynamo_row.items():
-            for val_type, val in val_dict.items():
-
-                # type_deserializer.deserialize() parses 'N' to `Decimal` type but it cant be parsed to a datetime
-                # so we cast it to either an integer or a float.
-                if val_type == 'N':
-                    result[key] = float(val) if '.' in val else int(val)
-                elif val_type == 'M':
-                    result[key] = dynamo_to_dict(val, row_mapper=row_mapper, fetch_all_fields=True)
-                elif val_type == 'S':
                     # Try to load to a dictionary if looks like JSON.
                     if val.startswith('{') and val.endswith('}') and not dont_json_loads_results:
                         try:
@@ -120,7 +96,7 @@ def dict_to_dynamo(row_dict, row_mapper: Dict[str, str], add_prefix=None):
             elif key_type == 'S':
                 result[key_with_prefix] = {'S': str(val)}
             elif key_type == 'M':
-                result[key_with_prefix] = {'M': dict_to_dynamo(val)}
+                result[key_with_prefix] = {'M': dict_to_dynamo(val, row_mapper=row_mapper)}
             else:
                 result[key_with_prefix] = type_serializer.serialize(val)
 
@@ -139,7 +115,7 @@ def dict_to_dynamo(row_dict, row_mapper: Dict[str, str], add_prefix=None):
         elif isinstance(val, str):
             result[key_with_prefix] = {'S': str(val)}
         elif isinstance(val, dict):
-            result[key_with_prefix] = {'M': dict_to_dynamo(val)}
+            result[key_with_prefix] = {'M': dict_to_dynamo(val, row_mapper=row_mapper)}
         else:
             result[key_with_prefix] = type_serializer.serialize(val)
 
