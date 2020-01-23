@@ -25,7 +25,6 @@
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
 """
-from converters import dynamo_to_dict, dict_to_dynamo
 
 
 __all__ = ['DynamoDbClient', 'clean_dynamo_table']
@@ -44,6 +43,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
 
 from .helpers import chunks
+from converters import dynamo_to_dict, dict_to_dynamo
 
 
 logger = logging.getLogger('sosw-dynamodb')
