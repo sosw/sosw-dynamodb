@@ -57,7 +57,7 @@ class DynamoDbClient:
     The current implementation supports only one fixed table during initialization,
     but you are free to initialize multiple simultaneous dynamo_clients in your Lambda with different configs.
 
-    Config should have a mapping for the field types and required fields.
+    Config should have a mapping for the field types.
     Config example:
 
     .. code-block:: python
@@ -67,7 +67,6 @@ class DynamoDbClient:
                 'col_name_1':      'N', # Number
                 'col_name_2':      'S', # String
             },
-            'required_fields': ['col_name_1']
             'table_name': 'some_table_name',  # If a table is not specified, this table will be used.
             'hash_key': 'the_hash_key',
             'dont_json_loads_results': True  # Use this if you don't want to convert json strings into json
@@ -230,7 +229,7 @@ class DynamoDbClient:
         return indexes
 
 
-    def dynamo_to_dict(self, dynamo_row: Dict, strict: bool = None, fetch_all_fields: Optional[bool] = None) -> Dict:
+    def dynamo_to_dict(self, dynamo_row: Dict, fetch_all_fields: Optional[bool] = None) -> Dict:
         """
         Convert the ugly DynamoDB syntax of the row, to regular dictionary.
         We currently support only String or Numeric values. Latest ones are converted to int or float.
@@ -240,17 +239,12 @@ class DynamoDbClient:
         will convert to:    {'key1': 3, 'key2': 'value2'}
 
         :param dict dynamo_row:       DynamoDB row item
-        :param bool strict:           DEPRECATED.
         :param bool fetch_all_fields: If False only row_mapper fields will be extracted from dynamo_row, else, all
                                       fields will be extracted from dynamo_row.
         :return: The row in a key-value format
         :rtype: dict
         """
 
-        if strict is not None:
-            logging.warning(f"dynamo_to_dict `strict` variable is deprecated in sosw 0.7.13+. "
-                            f"Please replace it's usage with `fetch_all_fields` (and reverse the boolean value)")
-        fetch_all_fields = fetch_all_fields if fetch_all_fields is not None else False if strict is None else not strict
         result = {}
 
         # Get fields from dynamo_row which are present in row mapper
@@ -305,11 +299,10 @@ class DynamoDbClient:
                     else:
                         result[key] = self.type_deserializer.deserialize(val_dict)
 
-        assert all(True for x in self.config['required_fields'] if result.get(x)), "Some `required_fields` are missing"
         return result
 
 
-    def dict_to_dynamo(self, row_dict, add_prefix=None, strict=True):
+    def dict_to_dynamo(self, row_dict, add_prefix=None):
         """
         Convert the row from regular dictionary to the ugly DynamoDB syntax. Takes settings from row_mapper.
 
@@ -318,9 +311,6 @@ class DynamoDbClient:
 
         :param dict row_dict:   A row we want to convert to dynamo syntax.
         :param str add_prefix:  A string prefix to add to the key in the result dict. Useful for queries like update.
-        :param bool strict:     If False, will get the type from the value in the dict (this works for numbers and
-                                strings). If True, won't add them if they're not in the required_fields, and if they
-                                are, will raise an error.
 
         :return:                DynamoDB Task item
         :rtype:                 dict
@@ -343,7 +333,7 @@ class DynamoDbClient:
                 elif key_type == 'S':
                     result[key_with_prefix] = {'S': str(val)}
                 elif key_type == 'M':
-                    result[key_with_prefix] = {'M': self.dict_to_dynamo(val, strict=False)}
+                    result[key_with_prefix] = {'M': self.dict_to_dynamo(val)}
                 else:
                     result[key_with_prefix] = self.type_serializer.serialize(val)
 
@@ -353,27 +343,18 @@ class DynamoDbClient:
 
         # Keys which are not in row mapper
         for key in list(set(row_dict.keys()) - set(result_keys)):
-            if not strict:
-                val = row_dict.get(key)
-                key_with_prefix = f"{add_prefix}{key}"
-                if isinstance(val, bool):
-                    result[key_with_prefix] = {'BOOL': to_bool(val)}
-                elif isinstance(val, (int, float)) or (isinstance(val, str) and val.isnumeric()):
-                    result[key_with_prefix] = {'N': str(val)}
-                elif isinstance(val, str):
-                    result[key_with_prefix] = {'S': str(val)}
-                elif isinstance(val, dict):
-                    result[key_with_prefix] = {'M': self.dict_to_dynamo(val, strict=False)}
-                else:
-                    result[key_with_prefix] = self.type_serializer.serialize(val)
+            val = row_dict.get(key)
+            key_with_prefix = f"{add_prefix}{key}"
+            if isinstance(val, bool):
+                result[key_with_prefix] = {'BOOL': to_bool(val)}
+            elif isinstance(val, (int, float)) or (isinstance(val, str) and val.isnumeric()):
+                result[key_with_prefix] = {'N': str(val)}
+            elif isinstance(val, str):
+                result[key_with_prefix] = {'S': str(val)}
+            elif isinstance(val, dict):
+                result[key_with_prefix] = {'M': self.dict_to_dynamo(val)}
             else:
-                if key not in self.config.get('required_fields', []):
-                    logger.warning(f"Field {key} is missing from row_mapper, so we can't convert it to DynamoDB "
-                                   f"syntax. This is not a required field, so we continue, but please investigate "
-                                   f"row: {row_dict}")
-                else:
-                    raise ValueError(f"Field {key} is missing from row_mapper, so we can't convert it to DynamoDB "
-                                     f"syntax. This is a required field, so we can not continue. Row: {row_dict}")
+                result[key_with_prefix] = self.type_serializer.serialize(val)
 
         logger.debug(f"dict_to_dynamo result: {result}")
         return result
@@ -381,7 +362,7 @@ class DynamoDbClient:
 
     def get_by_query(self, keys: Dict, table_name: Optional[str] = None, index_name: Optional[str] = None,
                      comparisons: Optional[Dict] = None, max_items: Optional[int] = None,
-                     filter_expression: Optional[str] = None, strict: bool = None, return_count: bool = False,
+                     filter_expression: Optional[str] = None, return_count: bool = False,
                      desc: bool = False, fetch_all_fields: bool = None, expr_attrs_names: list = None) \
             -> Union[List[Dict], int]:
         """
@@ -409,7 +390,6 @@ class DynamoDbClient:
         :param int max_items:   Limit the number of items to fetch.
         :param str filter_expression:  Supports regular comparisons and `between`. Input must be a regular human string
             e.g. 'key <= 42', 'name = marta', 'foo between 10 and 20', etc.
-        :param bool strict: DEPRECATED.
         :param bool return_count: If True, will return the number of items in the result instead of the items themselves
         :param bool desc:    By default (False) the the values will be sorted ascending by the SortKey.
                              To reverse the order set the argument `desc = True`.
@@ -426,14 +406,9 @@ class DynamoDbClient:
             OR the count if `return_count` is True
         """
 
-        if strict is not None:
-            logging.warning(f"get_by_query `strict` variable is deprecated in sosw 0.7.13+. "
-                            f"Please replace it's usage with `fetch_all_fields` (and reverse the boolean value)")
-        fetch_all_fields = fetch_all_fields if fetch_all_fields is not None else False if strict is None else not strict
-
         table_name = self._get_validate_table_name(table_name)
 
-        filter_values = self.dict_to_dynamo(keys, add_prefix=':', strict=False)
+        filter_values = self.dict_to_dynamo(keys, add_prefix=':')
         cond_expr_parts = []
 
         for key_attr_name in keys:
@@ -544,7 +519,7 @@ class DynamoDbClient:
             # It is important to add prefix to value here to avoid attribute naming conflicts for example
             # in conditional_update expressions. e.g you update some field only if it's value is matching condition.
             result_expr = f"{key} {operator} :filter_{key}"
-            result_values = self.dict_to_dynamo({f"filter_{key}": words[-1]}, add_prefix=':', strict=False)
+            result_values = self.dict_to_dynamo({f"filter_{key}": words[-1]}, add_prefix=':')
 
         # This must be `between` statement.
         elif len(words) == 5:
@@ -553,14 +528,14 @@ class DynamoDbClient:
             key = words[0]
             result_expr = f"{key} between :st_between_{key} and :en_between_{key}"
             result_values = self.dict_to_dynamo({f"st_between_{key}": words[2],
-                                                 f"en_between_{key}": words[4]}, add_prefix=':', strict=False)
+                                                 f"en_between_{key}": words[4]}, add_prefix=':')
         else:
             raise ValueError(f"Unsupported expression for Filtering: {expression}")
 
         return result_expr, result_values
 
 
-    def get_by_scan(self, attrs=None, table_name=None, strict=None, fetch_all_fields=None):
+    def get_by_scan(self, attrs=None, table_name=None, fetch_all_fields=None):
         """
         Scans a table. Don't use this method if you want to select by keys. It is SLOW compared to get_by_query.
         Careful - don't make queries of too many items, this could run for a long time.
@@ -569,17 +544,11 @@ class DynamoDbClient:
 
         :param dict attrs: Attribute names and values of the items we get. Can be empty to get the whole table.
         :param str table_name: Name of the dynamo table. If not specified, will use table_name from the config.
-        :param bool strict: DEPRECATED.
         :param bool fetch_all_fields: If False, will only get the attributes specified in the row mapper.
             If True, will get all attributes. Default is False.
         :return: List of items from the table, each item in key-value format
         :rtype: list
         """
-
-        if strict is not None:
-            logging.warning(f"get_by_query `strict` variable is deprecated in sosw 0.7.13+. "
-                            f"Please replace it's usage with `fetch_all_fields` (and reverse the boolean value)")
-        fetch_all_fields = fetch_all_fields if fetch_all_fields is not None else False if strict is None else not strict
 
         response_iterator = self._build_scan_iterator(attrs, table_name)
 
@@ -591,7 +560,7 @@ class DynamoDbClient:
         return result
 
 
-    def get_by_scan_generator(self, attrs=None, table_name=None, strict=None, fetch_all_fields=None):
+    def get_by_scan_generator(self, attrs=None, table_name=None, fetch_all_fields=None):
         """
         Scans a table. Don't use this method if you want to select by keys. It is SLOW compared to get_by_query.
         Careful - don't make queries of too many items, this could run for a long time.
@@ -601,17 +570,11 @@ class DynamoDbClient:
 
         :param dict attrs: Attribute names and values of the items we get. Can be empty to get the whole table.
         :param str table_name: Name of the dynamo table. If not specified, will use table_name from the config.
-        :param bool strict: DEPRECATED.
         :param bool fetch_all_fields: If False, will only get the attributes specified in the row mapper.
             If false, will get all attributes. Default is True.
         :return: List of items from the table, each item in key-value format
         :rtype: list
         """
-
-        if strict is not None:
-            logging.warning(f"get_by_query `strict` variable is deprecated in sosw 0.7.13+. "
-                            f"Please replace it's usage with `fetch_all_fields` (and reverse the boolean value)")
-        fetch_all_fields = fetch_all_fields if fetch_all_fields is not None else False if strict is None else not strict
 
         response_iterator = self._build_scan_iterator(attrs, table_name)
         for page in response_iterator:
@@ -625,7 +588,7 @@ class DynamoDbClient:
         filter_values = None
         cond_expr = None
         if attrs:
-            filter_values = self.dict_to_dynamo(attrs, add_prefix=':', strict=False)
+            filter_values = self.dict_to_dynamo(attrs, add_prefix=':')
 
             cond_expr_parts = []
 
@@ -651,7 +614,7 @@ class DynamoDbClient:
 
 
     def batch_get_items_one_table(self, keys_list, table_name=None, max_retries=0, retry_wait_base_time=0.2,
-                                  strict=None, fetch_all_fields=None):
+                                  fetch_all_fields=None):
         """
         Gets a batch of items from a single dynamo table.
         Only accepts keys, can't query by other columns.
@@ -669,17 +632,11 @@ class DynamoDbClient:
                                 multiplied by 2 after each retry, so `retries` shouldn't be a big number.
                                 Default is 1.
         :param int retry_wait_base_time: Wait this much time after first retry. Will wait twice longer in each retry.
-        :param bool strict: DEPRECATED.
         :param bool fetch_all_fields: If False, will only get the attributes specified in the row mapper.
                                       If True, will get all attributes. Default is False.
         :return: List of items from the table
         :rtype: list
         """
-
-        if strict is not None:
-            logging.warning(f"batch_get_items_one_table `strict` variable is deprecated in sosw 0.7.13+. "
-                            f"Please replace it's usage with `fetch_all_fields` (and reverse the boolean value)")
-        fetch_all_fields = fetch_all_fields if fetch_all_fields is not None else False if strict is None else not strict
 
         table_name = self._get_validate_table_name(table_name)
 
@@ -738,7 +695,7 @@ class DynamoDbClient:
 
     def build_put_query(self, row, table_name=None, overwrite_existing=True):
         table_name = self._get_validate_table_name(table_name)
-        dynamo_formatted_row = self.dict_to_dynamo(row, strict=False)
+        dynamo_formatted_row = self.dict_to_dynamo(row)
         query = {
             'TableName': table_name,
             'Item':      dynamo_formatted_row
@@ -751,7 +708,7 @@ class DynamoDbClient:
 
     def build_delete_query(self, delete_keys: Dict, table_name: str = None):
         table_name = self._get_validate_table_name(table_name)
-        dynamo_formatted_row = self.dict_to_dynamo(delete_keys, strict=False)
+        dynamo_formatted_row = self.dict_to_dynamo(delete_keys)
         query = {
             'TableName': table_name,
             'Key':       dynamo_formatted_row
@@ -829,11 +786,11 @@ class DynamoDbClient:
                 expression_attributes[f"#{col}"] = col
                 attribute_values.update({'zero': '0'})
 
-        keys = self.dict_to_dynamo(keys, strict=False)
+        keys = self.dict_to_dynamo(keys)
 
         attribute_values.update((attributes_to_update or {}))
         attribute_values.update(attributes_to_increment or {})
-        attribute_values = self.dict_to_dynamo(attribute_values.copy(), add_prefix=":", strict=False)
+        attribute_values = self.dict_to_dynamo(attribute_values.copy(), add_prefix=":")
 
         update_expr_parts = []
 
